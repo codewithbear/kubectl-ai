@@ -231,7 +231,8 @@ func (a *Conversation) RunOneRound(ctx context.Context, query string) error {
 			}
 
 			s := toolCall.PrettyPrint()
-			a.doc.AddBlock(ui.NewFunctionCallRequestBlock().SetText(fmt.Sprintf("  Running: %s\n", s)))
+			a.doc.AddBlock(ui.NewFunctionCallRequestBlock().SetText(fmt.Sprintf("  Running: %s
+", s)))
 			// Ask for confirmation only if SkipPermissions is false AND the tool modifies resources.
 			if !a.SkipPermissions && call.Arguments["modifies_resource"] != "no" {
 				confirmationPrompt := `  Do you want to proceed ?
@@ -252,6 +253,8 @@ func (a *Conversation) RunOneRound(ctx context.Context, query string) error {
 					}
 					return fmt.Errorf("reading input: %w", err)
 				}
+
+				selectedChoice = normalizeConfirmationInput(selectedChoice)
 
 				switch selectedChoice {
 				case "1":
@@ -289,7 +292,8 @@ func (a *Conversation) RunOneRound(ctx context.Context, query string) error {
 			}
 
 			if a.EnableToolUseShim {
-				observation := fmt.Sprintf("Result of running %q:\n%s", call.Name, output)
+				observation := fmt.Sprintf("Result of running %q:
+%s", call.Name, output)
 				currChatContent = append(currChatContent, observation)
 			} else {
 				result, err := tools.ToolResultToMap(output)
@@ -316,7 +320,8 @@ func (a *Conversation) RunOneRound(ctx context.Context, query string) error {
 
 	// If we've reached the maximum number of iterations
 	log.Info("Max iterations reached", "iterations", maxIterations)
-	errorBlock := ui.NewErrorBlock().SetText(fmt.Sprintf("Sorry, couldn't complete the task after %d iterations.\n", maxIterations))
+	errorBlock := ui.NewErrorBlock().SetText(fmt.Sprintf("Sorry, couldn't complete the task after %d iterations.
+", maxIterations))
 	a.doc.AddBlock(errorBlock)
 	return fmt.Errorf("max iterations reached")
 }
@@ -337,7 +342,8 @@ func (a *Conversation) generatePrompt(_ context.Context, defaultPromptTemplate s
 		if err != nil {
 			return "", fmt.Errorf("error reading extra prompt path: %v", err)
 		}
-		promptTemplate += "\n" + string(content)
+		promptTemplate += "
+" + string(content)
 	}
 
 	tmpl, err := template.New("promptTemplate").Parse(promptTemplate)
@@ -415,7 +421,8 @@ func parseReActResponse(input string) (*ReActResponse, error) {
 		return nil, fmt.Errorf("no JSON code block found in %q", cleaned)
 	}
 
-	cleaned = strings.ReplaceAll(cleaned, "\n", "")
+	cleaned = strings.ReplaceAll(cleaned, "
+", "")
 	cleaned = strings.TrimSpace(cleaned)
 
 	var reActResp ReActResponse
@@ -501,7 +508,9 @@ type ShimCandidate struct {
 }
 
 func (c *ShimCandidate) String() string {
-	return fmt.Sprintf("Thought: %s\nAnswer: %s\nAction: %s", c.candidate.Thought, c.candidate.Answer, c.candidate.Action)
+	return fmt.Sprintf("Thought: %s
+Answer: %s
+Action: %s", c.candidate.Thought, c.candidate.Answer, c.candidate.Action)
 }
 
 func (c *ShimCandidate) Parts() []gollm.Part {
@@ -544,4 +553,18 @@ func (p *ShimPart) AsFunctionCalls() ([]gollm.FunctionCall, bool) {
 		}, true
 	}
 	return nil, false
+}
+
+// normalizeConfirmationInput makes confirmation input more user-friendly.
+// "yes", "y" (case-insensitive) are treated as "1". "no", "n" as "3".
+func normalizeConfirmationInput(input string) string {
+	v := strings.TrimSpace(strings.ToLower(input))
+	switch v {
+	case "yes", "y":
+		return "1"
+	case "no", "n":
+		return "3"
+	default:
+		return input
+	}
 }
