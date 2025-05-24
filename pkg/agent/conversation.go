@@ -130,6 +130,19 @@ func (c *Conversation) Close() error {
 	return nil
 }
 
+// normalizeUserChoice converts user input to standardized choices
+func normalizeUserChoice(input string) string {
+	normalized := strings.ToLower(strings.TrimSpace(input))
+	switch normalized {
+	case "yes", "y":
+		return "1"
+	case "no", "n":
+		return "3"
+	default:
+		return input
+	}
+}
+
 // RunOneRound executes a chat-based agentic loop with the LLM using function calling.
 func (a *Conversation) RunOneRound(ctx context.Context, query string) error {
 	log := klog.FromContext(ctx)
@@ -231,16 +244,18 @@ func (a *Conversation) RunOneRound(ctx context.Context, query string) error {
 			}
 
 			s := toolCall.PrettyPrint()
-			a.doc.AddBlock(ui.NewFunctionCallRequestBlock().SetText(fmt.Sprintf("  Running: %s\n", s)))
+			a.doc.AddBlock(ui.NewFunctionCallRequestBlock().SetText(fmt.Sprintf("  Running: %s
+", s)))
 			// Ask for confirmation only if SkipPermissions is false AND the tool modifies resources.
 			if !a.SkipPermissions && call.Arguments["modifies_resource"] != "no" {
 				confirmationPrompt := `  Do you want to proceed ?
   1) Yes
   2) Yes, and don't ask me again
-  3) No`
+  3) No
+  (You can also type: yes/y for option 1, no/n for option 3)`
 
 				optionsBlock := ui.NewInputOptionBlock().SetPrompt(confirmationPrompt)
-				optionsBlock.SetOptions([]string{"1", "2", "3"})
+				optionsBlock.SetOptions([]string{"1", "2", "3", "yes", "y", "no", "n"})
 				a.doc.AddBlock(optionsBlock)
 
 				selectedChoice, err := optionsBlock.Observable().Wait()
@@ -253,7 +268,10 @@ func (a *Conversation) RunOneRound(ctx context.Context, query string) error {
 					return fmt.Errorf("reading input: %w", err)
 				}
 
-				switch selectedChoice {
+				// Normalize user input
+				normalizedChoice := normalizeUserChoice(selectedChoice)
+
+				switch normalizedChoice {
 				case "1":
 					// Proceed with the operation
 				case "2":
@@ -289,7 +307,8 @@ func (a *Conversation) RunOneRound(ctx context.Context, query string) error {
 			}
 
 			if a.EnableToolUseShim {
-				observation := fmt.Sprintf("Result of running %q:\n%s", call.Name, output)
+				observation := fmt.Sprintf("Result of running %q:
+%s", call.Name, output)
 				currChatContent = append(currChatContent, observation)
 			} else {
 				result, err := tools.ToolResultToMap(output)
@@ -316,7 +335,8 @@ func (a *Conversation) RunOneRound(ctx context.Context, query string) error {
 
 	// If we've reached the maximum number of iterations
 	log.Info("Max iterations reached", "iterations", maxIterations)
-	errorBlock := ui.NewErrorBlock().SetText(fmt.Sprintf("Sorry, couldn't complete the task after %d iterations.\n", maxIterations))
+	errorBlock := ui.NewErrorBlock().SetText(fmt.Sprintf("Sorry, couldn't complete the task after %d iterations.
+", maxIterations))
 	a.doc.AddBlock(errorBlock)
 	return fmt.Errorf("max iterations reached")
 }
@@ -337,7 +357,8 @@ func (a *Conversation) generatePrompt(_ context.Context, defaultPromptTemplate s
 		if err != nil {
 			return "", fmt.Errorf("error reading extra prompt path: %v", err)
 		}
-		promptTemplate += "\n" + string(content)
+		promptTemplate += "
+" + string(content)
 	}
 
 	tmpl, err := template.New("promptTemplate").Parse(promptTemplate)
@@ -415,133 +436,10 @@ func parseReActResponse(input string) (*ReActResponse, error) {
 		return nil, fmt.Errorf("no JSON code block found in %q", cleaned)
 	}
 
-	cleaned = strings.ReplaceAll(cleaned, "\n", "")
+	cleaned = strings.ReplaceAll(cleaned, "
+", "")
 	cleaned = strings.TrimSpace(cleaned)
 
 	var reActResp ReActResponse
 	if err := json.Unmarshal([]byte(cleaned), &reActResp); err != nil {
-		return nil, fmt.Errorf("parsing JSON %q: %w", cleaned, err)
-	}
-	return &reActResp, nil
-}
-
-// toMap converts the value to a map, going via JSON
-func toMap(v any) (map[string]any, error) {
-	j, err := json.Marshal(v)
-	if err != nil {
-		return nil, fmt.Errorf("converting %T to json: %w", v, err)
-	}
-	m := make(map[string]any)
-	if err := json.Unmarshal(j, &m); err != nil {
-		return nil, fmt.Errorf("converting json to map: %w", err)
-	}
-	return m, nil
-}
-
-func candidateToShimCandidate(iterator gollm.ChatResponseIterator) (gollm.ChatResponseIterator, error) {
-	return func(yield func(gollm.ChatResponse, error) bool) {
-		buffer := ""
-		for response, err := range iterator {
-			if err != nil {
-				yield(nil, err)
-				return
-			}
-
-			if len(response.Candidates()) == 0 {
-				yield(nil, fmt.Errorf("no candidates in LLM response"))
-				return
-			}
-
-			candidate := response.Candidates()[0]
-
-			for _, part := range candidate.Parts() {
-				if text, ok := part.AsText(); ok {
-					buffer += text
-					klog.Infof("text is %q", text)
-				} else {
-					yield(nil, fmt.Errorf("no text part found in candidate"))
-					return
-				}
-			}
-
-			if _, found := extractJSON(buffer); found {
-				break
-			}
-		}
-
-		if buffer == "" {
-			yield(nil, nil)
-			return
-		}
-
-		parsedReActResp, err := parseReActResponse(buffer)
-		if err != nil {
-			yield(nil, fmt.Errorf("parsing ReAct response %q: %w", buffer, err))
-			return
-		}
-		buffer = "" // TODO: any trailing text?
-		yield(&ShimResponse{candidate: parsedReActResp}, nil)
-	}, nil
-}
-
-type ShimResponse struct {
-	candidate *ReActResponse
-}
-
-func (r *ShimResponse) UsageMetadata() any {
-	return nil
-}
-
-func (r *ShimResponse) Candidates() []gollm.Candidate {
-	return []gollm.Candidate{&ShimCandidate{candidate: r.candidate}}
-}
-
-type ShimCandidate struct {
-	candidate *ReActResponse
-}
-
-func (c *ShimCandidate) String() string {
-	return fmt.Sprintf("Thought: %s\nAnswer: %s\nAction: %s", c.candidate.Thought, c.candidate.Answer, c.candidate.Action)
-}
-
-func (c *ShimCandidate) Parts() []gollm.Part {
-	var parts []gollm.Part
-	if c.candidate.Thought != "" {
-		parts = append(parts, &ShimPart{text: c.candidate.Thought})
-	}
-	if c.candidate.Answer != "" {
-		parts = append(parts, &ShimPart{text: c.candidate.Answer})
-	}
-	if c.candidate.Action != nil {
-		parts = append(parts, &ShimPart{action: c.candidate.Action})
-	}
-	return parts
-}
-
-type ShimPart struct {
-	text   string
-	action *Action
-}
-
-func (p *ShimPart) AsText() (string, bool) {
-	return p.text, p.text != ""
-}
-
-func (p *ShimPart) AsFunctionCalls() ([]gollm.FunctionCall, bool) {
-	if p.action != nil {
-		functionCallArgs, err := toMap(p.action)
-		if err != nil {
-			return nil, false
-		}
-		delete(functionCallArgs, "name") // passed separately
-		// delete(functionCallArgs, "reason")
-		// delete(functionCallArgs, "modifies_resource")
-		return []gollm.FunctionCall{
-			{
-				Name:      p.action.Name,
-				Arguments: functionCallArgs,
-			},
-		}, true
-	}
-	return nil, false
-}
+		return nil, fmt.Errorf("parsing JSON %q
