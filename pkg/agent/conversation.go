@@ -130,6 +130,20 @@ func (c *Conversation) Close() error {
 	return nil
 }
 
+// normalizeConfirmationInput normalizes different yes/no forms into canonical choices.
+func normalizeConfirmationInput(input string) string {
+	switch strings.TrimSpace(strings.ToLower(input)) {
+	case "1", "yes", "y":
+		return "1"
+	case "2":
+		return "2"
+	case "3", "no", "n":
+		return "3"
+	default:
+		return input
+	}
+}
+
 // RunOneRound executes a chat-based agentic loop with the LLM using function calling.
 func (a *Conversation) RunOneRound(ctx context.Context, query string) error {
 	log := klog.FromContext(ctx)
@@ -252,6 +266,8 @@ func (a *Conversation) RunOneRound(ctx context.Context, query string) error {
 					}
 					return fmt.Errorf("reading input: %w", err)
 				}
+
+				selectedChoice = normalizeConfirmationInput(selectedChoice)
 
 				switch selectedChoice {
 				case "1":
